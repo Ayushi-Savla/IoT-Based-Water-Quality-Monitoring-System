@@ -1,21 +1,3 @@
-#include <PubSubClient.h>
-
-#include <WiFi.h>
-#include <WiFiAP.h>
-#include <WiFiClient.h>
-#include <WiFiGeneric.h>
-#include <WiFiMulti.h>
-#include <WiFiScan.h>
-#include <WiFiServer.h>
-#include <WiFiSTA.h>
-#include <WiFiType.h>
-#include <WiFiUdp.h>
-
-
-
-#include <uFire_EC.h>
-#include <uFire_EC_JSON.h>
-#include <uFire_EC_MP.h>
 #include <DTH_Turbidity.h>
 #include <ph4502c_sensor.h>
 
