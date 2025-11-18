@@ -1,5 +1,27 @@
+#include <PubSubClient.h>
+
+#include <WiFi.h>
+#include <WiFiAP.h>
+#include <WiFiClient.h>
+#include <WiFiGeneric.h>
+#include <WiFiMulti.h>
+#include <WiFiScan.h>
+#include <WiFiServer.h>
+#include <WiFiSTA.h>
+#include <WiFiType.h>
+#include <WiFiUdp.h>
+
 #include <DTH_Turbidity.h>
 #include <ph4502c_sensor.h>
+
+const char* ssid = "";
+const char* password = "";
+const char* mqttServer = "mqtt.thingsboard.cloud";  // or your ThingsBoard IP
+const int mqttPort = 1883;
+const char* accessToken = "";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
 
 #define PH_PIN     25   // PH4502C Po
 #define TEMP_PIN   26   // PH4502C To
@@ -8,9 +30,42 @@
 
 void setup() {
   Serial.begin(115200);
+  
+  // Connect to WiFi
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Connect to ThingsBoard MQTT
+  client.setServer(mqttServer, mqttPort);
+  connectMQTT();
+}
+
+void connectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Connecting to ThingsBoard MQTT...");
+    if (client.connect("ESP32_Device", accessToken, NULL)) {
+      Serial.println(" connected!");
+    } else {
+      Serial.print(" failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" retrying in 5 seconds...");
+      delay(5000);
+    }
+  }
 }
 
 void loop() {
+  if (!client.connected()) connectMQTT();
+  client.loop();
+  
   // Read sensor values
   int rawPH = analogRead(PH_PIN);
   int rawTemp = analogRead(TEMP_PIN);
@@ -23,10 +78,10 @@ void loop() {
   float voltageTurb = rawTurb * (3.3 / 4095.0);
   float voltageTDS = rawEC * (3.3 / 4095.0);
 
-  // pH sensor
-  float pHValue = 7 + ((2.5 - voltagePH) / 0.6);
+  // pH sensor conversion
+  float pHValue = 7 + ((2.5 - voltagePH) / 0.8);
 
-  // Temperature
+  // Temperature (approximation)
   float temperature = (voltageTemp * 14.8);
 
   // Turbidity (NTU)
@@ -44,7 +99,7 @@ void loop() {
   float tdsValue = ecComp / 2;
   float salinity = ecComp * 0.00064;
 
-  // Turbidity level
+  // Turbidity level description
   String turbidityLevel;
   if (voltageTurb >= 2.96) {
     turbidityLevel = "Level 1: Clear Water";
@@ -56,13 +111,13 @@ void loop() {
     turbidityLevel = "Level 4: Highly Turbid";
   }
 
-  // Subindex (Qn) calculations (0-100)
-  float q_temp = max(0, 100 - abs(temperature - 25) * 3);
-  float q_pH = max(0, 100 - abs(pHValue - 7) * 15);
-  float q_turb = max(0, 100 - (turbidityNTU / 10));
-  float q_tds = max(0, 100 - (tdsValue / 10));
-  float q_ec = max(0, 100 - (ecComp / 20));
-  float q_sal = max(0, 100 - (salinity * 100));
+  // Subindex (Qn) calculations (0–100)
+  float q_temp = max(0.0f, 100.0f - abs(temperature - 25) * 3.0f);
+  float q_pH = max(0.0f, 100.0f - abs(pHValue - 7) * 15.0f);
+  float q_turb = max(0.0f, 100.0f - (turbidityNTU / 10.0f));
+  float q_tds = max(0.0f, 100.0f - (tdsValue / 10.0f));
+  float q_ec = max(0.0f, 100.0f - (ecComp / 20));
+  float q_sal = max(0.0f, 100.0f - (salinity * 100));
 
   // Weightage per parameter
   float W_temp = 0.08;
@@ -85,7 +140,7 @@ void loop() {
   else if (WQI >= 25) wqiStatus = "Poor";
   else wqiStatus = "Very Poor";
 
-  // Print readings
+  // Print readings to Serial Monitor
   Serial.println("WATER QUALITY READINGS");
   Serial.print("pH: "); Serial.println(pHValue, 2);
   Serial.print("Temperature: "); Serial.print(temperature, 1); Serial.println(" °C");
@@ -95,19 +150,25 @@ void loop() {
   Serial.print("TDS: "); Serial.print(tdsValue, 1); Serial.println(" ppm");
   Serial.print("Salinity: "); Serial.print(salinity, 3); Serial.println(" ppt");
 
-  Serial.println("");
-  Serial.println("SUBINDICES");
-  Serial.print("Temp: "); Serial.println(q_temp, 1);
-  Serial.print("pH: "); Serial.println(q_pH, 1);
-  Serial.print("Turbidity: "); Serial.println(q_turb, 1);
-  Serial.print("TDS: "); Serial.println(q_tds, 1);
-  Serial.print("EC: "); Serial.println(q_ec, 1);
-  Serial.print("Salinity: "); Serial.println(q_sal, 1);
-
-  Serial.println("");
-  Serial.println("WATER QUALITY INDEX");
+  Serial.println("\nWATER QUALITY INDEX");
   Serial.print("WQI: "); Serial.print(WQI, 2);
   Serial.print(" -> "); Serial.println(wqiStatus);
+  Serial.println("\n");
 
-  delay(3000);
+  // ----- Send data to ThingsBoard -----
+  String payload = "{";
+  payload += "\"pH\":" + String(pHValue, 2) + ",";
+  payload += "\"temperature\":" + String(temperature, 1) + ",";
+  payload += "\"turbidity\":" + String(turbidityNTU, 1) + ",";
+  payload += "\"tds\":" + String(tdsValue, 1) + ",";
+  payload += "\"salinity\":" + String(salinity, 3) + ",";
+  payload += "\"ec\":" + String(ecComp, 1) + ",";
+  payload += "\"WQI\":" + String(WQI, 2) + ",";
+  payload += "\"status\":\"" + wqiStatus + "\"";
+  payload += "}";
+
+  client.publish("v1/devices/me/telemetry", payload.c_str());
+  Serial.println("Data sent to ThingsBoard!");
+
+  delay(10000);
 }
